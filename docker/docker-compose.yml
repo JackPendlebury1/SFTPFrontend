@@ -1,7 +1,7 @@
 version: '2'
 services:
   app:
-    container_name: filestash
+    container_name: hccsftpfrontend
     image: machines/filestash
     restart: always
     environment:
@@ -14,7 +14,7 @@ services:
     - "8334:8334"
 
   onlyoffice:
-    container_name: filestash_oods
+    container_name: hccsftpfrontend_oods
     image: onlyoffice/documentserver
     restart: always
     security_opt:
