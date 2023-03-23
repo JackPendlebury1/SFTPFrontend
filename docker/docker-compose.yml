@@ -2,7 +2,7 @@ version: '2'
 services:
   app:
     container_name: hccsftpfrontend
-    image: machines/filestash
+    image: neinomas/hccfrontendsftp:latest
     restart: always
     environment:
     - APPLICATION_URL=
@@ -14,7 +14,7 @@ services:
     - "8334:8334"
 
   onlyoffice:
-    container_name: hccsftpfrontend_oods
+    container_name: filestash_oods
     image: onlyoffice/documentserver
     restart: always
     security_opt:
