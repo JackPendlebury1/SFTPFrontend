@@ -1,0 +1,199 @@
+name: CI
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build_frontend:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        persist-credentials: false
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 14.x
+    - name: Setup
+      run: npm install
+    - name: Build
+      run: make build_frontend
+    - uses: actions/upload-artifact@master
+      with:
+        name: build-frontend
+        path: server/ctrl/static/www/
+
+  build_backend:
+    needs: build_frontend
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/download-artifact@master
+      with:
+        name: build-frontend
+        path: server/ctrl/static/www/
+    - uses: actions/setup-go@v3.5.0
+      with:
+        go-version: 1.19
+    - name: Setup
+      run: |
+        mkdir -p ./dist/data/state/config
+        cp config/config.json ./dist/data/state/config/
+    - name: Build
+      run: |
+        make build_init
+        make build_backend
+    - uses: actions/upload-artifact@master
+      with:
+        name: build
+        path: dist
+    - name: Verify
+      run: timeout 5 ./dist/filestash || code=$?; if [[ $code -ne 124 ]]; then exit $code; fi
+
+  test_prepare:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        persist-credentials: false
+    - name: Clone test repo
+      env:
+        PAT: ${{ secrets.PAT }}
+      run: |
+        git clone --depth 1 https://mickael-kerjean:$PAT@github.com/mickael-kerjean/filestash-test test
+        chmod -R 777 ./test/
+    - uses: actions/upload-artifact@master
+      with:
+        name: test
+        path: .
+
+  test_frontend:
+    needs: test_prepare
+    runs-on: ubuntu-latest
+    steps:
+    - name: Restore
+      uses: actions/download-artifact@v3
+      with:
+        name: test
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 14.x
+    - name: Setup
+      run: |
+        npm install
+        cd ./test/unit_js
+        npm install
+    - name: Run
+      run: |
+        cd ./test/unit_js
+        npm test
+
+  test_backend:
+    needs: test_prepare
+    runs-on: ubuntu-latest
+    steps:
+    - name: Restore
+      uses: actions/download-artifact@v3
+      with:
+        name: test
+    - uses: actions/setup-go@v3.5.0
+      with:
+        go-version: 1.19
+    - name: Setup
+      run: |
+        sudo apt-get install -y poppler-utils
+        cp ./test/assets/* /tmp/
+        mkdir server/ctrl/static/www/ && touch server/ctrl/static/www/index.html
+        make build_init
+        rm -rf server/generator/
+        go generate ./test/unit_go/...
+        go get github.com/stretchr/testify/assert
+        go mod vendor
+    - name: Run
+      run: go test --tags "fts5" -count=1 $(go list ./server/... | grep -v "server/plugin" | grep -v "server/generator")
+
+  test_smoke:
+    needs: build_backend
+    runs-on: ubuntu-latest
+    steps:
+     - name: Init
+       uses: actions/download-artifact@v3
+       with:
+         name: build
+     - name: Run
+       run: |
+         chmod +x filestash
+         timeout 5 ./filestash > access.log || code=$?; if [[ $code -ne 124 ]]; then exit $code; fi
+         echo "========= access.log "
+         cat access.log
+         echo "====================="
+         cat access.log | grep -q "Filestash v0.5 starting"
+         cat access.log | grep -q "listening on :"
+         cat access.log | grep -vz "WARN"
+         cat access.log | grep -vz "ERR"
+
+  test_e2e:
+    needs: [test_prepare, build_backend, test_smoke]
+    runs-on: ubuntu-latest
+    container:
+      image: machines/puppeteer
+      options: --user root
+      env:
+        ADMIN_PASSWORD: $2a$10$9OFbPZV4lYpYjU5eUi91o.kgeMyCuW11j878YBRri3gBwccq2lSFy
+        APP_URL: http://127.0.0.1:8334
+        CI: true
+    steps:
+    - name: Restore Build
+      uses: actions/download-artifact@v3
+      with:
+        name: build
+    - name: Restore Project
+      uses: actions/download-artifact@v3
+      with:
+        name: test
+    - name: Setup
+      run: |
+        cd ./test/e2e
+        npm install
+    - name: Run
+      run: |
+        chmod +x ./filestash
+        ./filestash > /dev/null &
+        cd ./test/e2e
+        node servers/webdav.js > /dev/null &
+        npm test
+
+  release_docker:
+    if: github.ref == 'refs/heads/master'
+    needs: [test_smoke, test_e2e]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Init
+      uses: actions/checkout@v3
+    - name: Setup
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Run
+      run: |
+        export COMMIT_SHA=`git rev-parse --short HEAD`
+        cd docker
+        docker build --tag machines/filestash:latest .
+        docker tag machines/filestash:latest machines/filestash:$COMMIT_SHA
+        docker push machines/filestash:latest
+        docker push machines/filestash:$COMMIT_SHA
+
+  deploy:
+    if: github.ref == 'refs/heads/master'
+    needs: release_docker
+    runs-on: ubuntu-latest
+    steps:
+    - name: Setup
+      uses: Azure/k8s-set-context@v1
+      with:
+        method: kubeconfig
+        kubeconfig: ${{ secrets.KUBE_CONFIG }}
+    - name: Deploy
+      run: kubectl rollout restart deployment app-filestash-demo -n filestash

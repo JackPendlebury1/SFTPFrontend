@@ -1,0 +1,32 @@
+.component_page_viewerpage{
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+
+    .page_container{
+        flex: 1;
+        display: flex;
+        overflow: hidden;
+        width: 100%;
+        > div{
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            width: 100%;
+            > div, > span{
+                flex: 1;
+                display: flex;
+                overflow: hidden;
+                width: 100%;
+            }
+            // loader
+            > span {
+                justify-content: center;
+            }
+        }
+        .box {
+            background: white;
+            box-shadow: rgba(158, 163, 172, 0.3) 3px 3px 10px;
+        }
+    }
+}
